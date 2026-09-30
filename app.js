@@ -4,7 +4,7 @@
 //        ＋ ntfyのデータ用トピックの最新1通（最大15分遅れの値）
 // 設計：vault 30_Blueberry/ベランダ_日射比例潅水_データ記録と遠隔設定_設計.md
 
-const APP_VER = '1.1.0';
+const APP_VER = '1.2.0';
 const LS_KEY = 'kansui-app';
 const DEFAULT_REPO = 'factabo-bot/veranda-kansui';
 const JST = 9 * 3600;
@@ -19,7 +19,7 @@ const S = {
   files: {},          // path -> 配列（jsonl）/ null（ない）
   latest: null,       // ntfyの最新1通（変換済み）
   loading: false, error: null,
-  view: { range: 14, metric: 'peak' },
+  view: { range: 14, metric: 'peak', dayFull: false },
 };
 
 // ---- 小さな道具 -------------------------------------------------------------
@@ -398,6 +398,7 @@ async function renderToday(page, key) {
 
   page.innerHTML = html;
   bindDayChart(key, sum);
+  page.querySelectorAll('#seg-day button').forEach(b => b.onclick = () => { S.view.dayFull = b.dataset.v === '1'; rerenderSoft(); });
   const go = k => { location.hash = k === todayKey() ? '#today' : `#today/${k}`; };
   $('#d-prev').onclick = () => go(addDays(key, -1));
   $('#d-next').onclick = () => { if (!isToday) go(addDays(key, 1)); };
@@ -414,20 +415,38 @@ function tankEvents(bins) {
   }
   return out;
 }
-const DAY_CHART = { W: 700, H: 190, L: 34, R: 8, T: 16, B: 22 };
+const DAY_CHART = { W: 400, H: 230, L: 30, R: 6, T: 14, B: 22 };
+// 表示する時間の範囲。ふだんは日中（5〜19時。暗くない記録があればその分広げる）、切り替えで24時間
+function dayRange(key, sum) {
+  const a = dayStart(key);
+  if (S.view.dayFull) return [a, a + 86400];
+  let s = 5, e = 19;
+  for (const r of sum.bins) {
+    if (r.solar_max_v < 0.02) continue;
+    const h = (r.ts - a) / 3600;
+    s = Math.min(s, Math.floor(h)); e = Math.max(e, Math.ceil(h + 0.25));
+  }
+  return [a + s * 3600, a + e * 3600];
+}
+function niceTop(v) {
+  const x = Math.max(v * 1.1, 20);
+  const mag = Math.pow(10, Math.floor(Math.log10(x)));
+  for (const m of [1, 1.2, 1.5, 2, 2.5, 3, 4, 5, 6, 8, 10]) if (x <= m * mag) return m * mag;
+  return 10 * mag;
+}
 // グラフの棒をタップ・なぞると、その15分の数字を出す
 function bindDayChart(key, sum) {
   const svg = $('#daychart'), info = $('#bin-info'), sel = $('#bin-sel');
   if (!svg || !info) return;
-  const { W, L, R, T, H, B } = DAY_CHART;
-  const iw = W - L - R, ih = H - T - B;
-  const a = dayStart(key);
+  const { W, L, R } = DAY_CHART;
+  const iw = W - L - R;
+  const [a0, a1] = dayRange(key, sum);
   const byStart = new Map(sum.bins.map(r => [r.ts, r]));
   const show = binTs => {
     const r = byStart.get(binTs);
     const shots = sum.shots.filter(s => s.ts >= binTs && s.ts < binTs + 900);
-    sel.setAttribute('x', L + ((binTs - a) / 86400) * iw);
-    sel.setAttribute('width', iw / 96);
+    sel.setAttribute('x', L + ((binTs - a0) / (a1 - a0)) * iw);
+    sel.setAttribute('width', (900 / (a1 - a0)) * iw);
     sel.removeAttribute('hidden');
     let h = `<div class="bin-head num">${hmOf(binTs)}〜${hmOf(binTs + 900)}</div>`;
     if (!r) h += '<p class="muted small">この15分の記録はありません。</p>';
@@ -446,7 +465,7 @@ function bindDayChart(key, sum) {
     const rect = svg.getBoundingClientRect();
     const xs = ((ev.clientX - rect.left) / rect.width) * W;
     const frac = clamp((xs - L) / iw, 0, 0.9999);
-    show(a + Math.floor((frac * 86400) / 900) * 900);
+    show(a0 + Math.floor((frac * (a1 - a0)) / 900) * 900);
   };
   let down = false;
   svg.addEventListener('pointerdown', ev => { down = true; try { svg.setPointerCapture(ev.pointerId); } catch (e) { /* 古いブラウザ */ } pick(ev); });
@@ -454,38 +473,51 @@ function bindDayChart(key, sum) {
   svg.addEventListener('pointerup', () => { down = false; });
   svg.addEventListener('pointercancel', () => { down = false; });
   // 最初は、記録のある最後の15分（今日）か、日射のいちばん多い15分（ほかの日）を出す
-  if (sum.bins.length) {
-    const first = key === todayKey() ? sum.bins[sum.bins.length - 1] : sum.bins.reduce((m, r) => (r.solar_vs > m.solar_vs ? r : m), sum.bins[0]);
+  const inRange = sum.bins.filter(r => r.ts >= a0 && r.ts < a1);
+  if (inRange.length) {
+    const first = key === todayKey() ? inRange[inRange.length - 1] : inRange.reduce((m, r) => (r.solar_vs > m.solar_vs ? r : m), inRange[0]);
     show(first.ts);
   } else {
-    info.innerHTML = '<p class="muted small">この日の記録はありません。</p>';
+    info.innerHTML = '<p class="muted small">この範囲の記録はありません。</p>';
   }
 }
 function dayChart(key, sum, isToday) {
   const { W, H, L, R, T, B } = DAY_CHART;
   const iw = W - L - R, ih = H - T - B;
-  const a = dayStart(key);
-  const maxV = Math.max(900, ...sum.bins.map(r => r.solar_vs));
-  const top = Math.ceil(maxV / 300) * 300;
-  const x = ts => L + ((ts - a) / 86400) * iw;
+  const [a0, a1] = dayRange(key, sum);
+  const bins = sum.bins.filter(r => r.ts >= a0 && r.ts < a1);
+  const top = niceTop(Math.max(0, ...bins.map(r => r.solar_vs)));
+  const x = ts => L + ((ts - a0) / (a1 - a0)) * iw;
   const y = v => T + ih - (v / top) * ih;
-  let s = `<svg class="chart daychart" id="daychart" viewBox="0 0 ${W} ${H}" role="img" aria-label="15分ごとの日射の積算と給水の時刻">
+  const hours = (a1 - a0) / 3600;
+  let s = `<div class="seg chart-seg" id="seg-day"><button data-v="0" class="${S.view.dayFull ? '' : 'on'}">日中</button><button data-v="1" class="${S.view.dayFull ? 'on' : ''}">24時間</button></div>
+    <svg class="chart daychart" id="daychart" viewBox="0 0 ${W} ${H}" role="img" aria-label="15分ごとの日射の積算と給水の時刻">
     <rect id="bin-sel" class="binsel" x="0" y="${T - 8}" width="0" height="${ih + 8}" hidden/>`;
-  for (let i = 0; i <= 3; i++) { const v = (top / 3) * i; s += `<line class="grid" x1="${L}" x2="${W - R}" y1="${y(v)}" y2="${y(v)}"/><text x="${L - 4}" y="${y(v) + 3}" text-anchor="end">${fmtN(v)}</text>`; }
-  for (let h = 0; h <= 24; h += 3) s += `<text x="${x(a + h * 3600)}" y="${H - 6}" text-anchor="middle">${h}時</text>`;
-  const bw = iw / 96 - 1;
+  for (let i = 0; i <= 4; i++) { const v = (top / 4) * i; s += `<line class="grid" x1="${L}" x2="${W - R}" y1="${y(v)}" y2="${y(v)}"/><text x="${L - 3}" y="${y(v) + 3}" text-anchor="end">${fmtN(v)}</text>`; }
+  const step = hours > 16 ? 3 : 2;
+  const h0 = Math.round((a0 - dayStart(key)) / 3600);
+  for (let h = Math.ceil(h0 / step) * step; h <= h0 + hours; h += step) {
+    const tx = x(dayStart(key) + h * 3600);
+    s += `<line class="grid" x1="${tx}" x2="${tx}" y1="${T}" y2="${T + ih}" opacity=".5"/><text x="${tx}" y="${H - 6}" text-anchor="middle">${h}時</text>`;
+  }
+  const bw = Math.max(1, (900 / (a1 - a0)) * iw - 1);
   const peakStart = peakWindow(sum.bins);
-  for (const r of sum.bins) {
+  for (const r of bins) {
     const hi = peakStart != null && r.ts >= peakStart && r.ts < peakStart + 3600;
-    s += `<rect class="bar${hi ? ' hi' : ''}" x="${x(r.ts) + 0.5}" y="${y(r.solar_vs)}" width="${bw}" height="${Math.max(0, T + ih - y(r.solar_vs))}"><title>${hmOf(r.ts)} ${fmtN(r.solar_vs)} V・秒</title></rect>`;
+    s += `<rect class="bar${hi ? ' hi' : ''}" x="${x(r.ts) + 0.5}" y="${y(r.solar_vs)}" width="${bw}" height="${Math.max(0, T + ih - y(r.solar_vs))}"></rect>`;
   }
+  let outside = 0;
   for (const sh of sum.shots) {
+    if (sh.ts < a0 || sh.ts >= a1) { outside++; continue; }
     const cx = x(sh.ts);
-    s += `<line class="shot" x1="${cx}" x2="${cx}" y1="${T - 2}" y2="${T + ih}" opacity=".35"/><circle class="shotdot" cx="${cx}" cy="${T - 4}" r="3.5"><title>${hmOf(sh.ts)} ${KIND_JA[sh.kind] || ''} ${sh.sec}秒</title></circle>`;
+    s += `<line class="shot" x1="${cx}" x2="${cx}" y1="${T - 2}" y2="${T + ih}" opacity=".35"/><circle class="shotdot" cx="${cx}" cy="${T - 4}" r="3"></circle>`;
   }
-  if (isToday) { const cx = x(nowTs()); s += `<line class="nowline" x1="${cx}" x2="${cx}" y1="${T}" y2="${T + ih}"/>`; }
+  if (isToday) { const n = nowTs(); if (n >= a0 && n < a1) { const cx = x(n); s += `<line class="nowline" x1="${cx}" x2="${cx}" y1="${T}" y2="${T + ih}"/>`; } }
   s += '</svg>';
-  if (peakStart != null) s += `<p class="hint">濃い色は、この日いちばん日射が多かった1時間（${hmOf(peakStart)}〜）です。</p>`;
+  const notes = [];
+  if (peakStart != null) notes.push(`濃い色は、この日いちばん日射が多かった1時間（${hmOf(peakStart)}〜）です。`);
+  if (outside) notes.push(`グラフの範囲の外に給水が${outside}回あります（下の一覧を見てください）。`);
+  if (notes.length) s += `<p class="hint">${notes.join('')}</p>`;
   return s;
 }
 function peakWindow(bins) {

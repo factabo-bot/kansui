@@ -160,6 +160,8 @@ input.in.w-full, textarea.in.w-full { width: 100%; }
 .chart .bar.hi { fill: var(--bar-strong); }
 .chart .shot { stroke: var(--green); stroke-width: 2; }
 .chart .shotdot { fill: var(--green); }
+.chart-seg { margin: 4px 0 2px; }
+.chart-seg button { padding: 3px 12px; font-size: 13px; }
 .chart.daychart { touch-action: pan-y; cursor: crosshair; user-select: none; -webkit-user-select: none; }
 .chart .binsel { fill: var(--text); opacity: 0.12; }
 .bin-info { border: 1px solid var(--line); border-radius: 6px; padding: 8px 12px; margin: 10px 0 4px; min-height: 60px; }
