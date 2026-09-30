@@ -4,7 +4,7 @@
 //        ＋ ntfyのデータ用トピックの最新1通（最大15分遅れの値）
 // 設計：vault 30_Blueberry/ベランダ_日射比例潅水_データ記録と遠隔設定_設計.md
 
-const APP_VER = '1.2.0';
+const APP_VER = '1.3.0';
 const LS_KEY = 'kansui-app';
 const DEFAULT_REPO = 'factabo-bot/veranda-kansui';
 const JST = 9 * 3600;
@@ -143,6 +143,19 @@ async function loadCore() {
 
 async function loadLatest() {
   S.latest = null;
+  S.liveNotices = [];
+  if (S.topics?.notify) {
+    try {
+      const res = await fetch(`https://ntfy.sh/${encodeURIComponent(S.topics.notify)}/json?poll=1&since=12h`, { cache: 'no-store' });
+      if (res.ok) {
+        for (const line of (await res.text()).split('\n')) {
+          if (!line.trim()) continue;
+          const ev = JSON.parse(line);
+          if (ev.event === 'message') S.liveNotices.push({ ts: ev.time, id: ev.id, message: ev.message || '', priority: ev.priority || 3 });
+        }
+      }
+    } catch (e) { /* 通知の履歴が取れなくても表示は続ける */ }
+  }
   if (!S.topics?.data) return;
   try {
     const res = await fetch(`https://ntfy.sh/${encodeURIComponent(S.topics.data)}/json?poll=1&since=latest`, { cache: 'no-store' });
@@ -163,7 +176,7 @@ async function loadLatest() {
 
 async function ensureMonths(months) {
   const need = [];
-  for (const mo of months) for (const kind of ['q15', 'shots']) {
+  for (const mo of months) for (const kind of ['q15', 'shots', 'events']) {
     const p = `data/${kind}/${mo}.jsonl`;
     if (!(p in S.files)) need.push(p);
   }
@@ -184,6 +197,14 @@ function binsBetween(fromTs, toTs) {
     for (const r of S.files[`data/q15/${mo}.jsonl`] || []) map.set(r.ts, r);
   }
   for (const r of S.latest?.q || []) map.set(r.ts, r);
+  return [...map.values()].filter(r => r.ts >= fromTs && r.ts < toTs).sort((a, b) => a.ts - b.ts);
+}
+function noticesBetween(fromTs, toTs) {
+  const map = new Map();
+  for (const mo of monthsBetween(dayKeyOf(fromTs), dayKeyOf(toTs - 1))) {
+    for (const r of S.files[`data/events/${mo}.jsonl`] || []) map.set(r.id, r);
+  }
+  for (const r of S.liveNotices || []) map.set(r.id, r);
   return [...map.values()].filter(r => r.ts >= fromTs && r.ts < toTs).sort((a, b) => a.ts - b.ts);
 }
 function shotsBetween(fromTs, toTs) {
@@ -395,6 +416,11 @@ async function renderToday(page, key) {
   html += '<h2>タンクの水</h2>';
   if (!tank.length) html += `<p class="muted">${sum.bins.length ? (sum.bins[sum.bins.length - 1].refill_low ? 'この日はずっと水が少ない状態でした。' : '変化はありません。') : '記録がありません。'}</p>`;
   else html += `<div class="list">${tank.map(t => `<div class="row" style="cursor:default"><div class="main"><div class="name">${esc(t.text)}</div><div class="desc num">${hmOf(t.ts)}ごろ</div></div></div>`).join('')}</div>`;
+
+  const notices = noticesBetween(dayStart(key), dayStart(key) + 86400);
+  html += '<h2>通知</h2>';
+  if (!notices.length) html += '<p class="muted">この日の通知はありません。</p>';
+  else html += `<div class="list">${notices.map(n => `<div class="row" style="cursor:default"><div class="main"><div class="name">${esc(n.message)}${(n.priority || 3) >= 4 ? ' <span class="tag red">重要</span>' : ''}</div><div class="desc num">${hmOf(n.ts)}</div></div></div>`).join('')}</div>`;
 
   page.innerHTML = html;
   bindDayChart(key, sum);
