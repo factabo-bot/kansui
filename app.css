@@ -160,6 +160,11 @@ input.in.w-full, textarea.in.w-full { width: 100%; }
 .chart .bar.hi { fill: var(--bar-strong); }
 .chart .shot { stroke: var(--green); stroke-width: 2; }
 .chart .shotdot { fill: var(--green); }
+.chart.daychart { touch-action: pan-y; cursor: crosshair; user-select: none; -webkit-user-select: none; }
+.chart .binsel { fill: var(--text); opacity: 0.12; }
+.bin-info { border: 1px solid var(--line); border-radius: 6px; padding: 8px 12px; margin: 10px 0 4px; min-height: 60px; }
+.bin-head { font-weight: 600; margin-bottom: 2px; }
+.bin-info .props { margin: 0; }
 .chart .nowline { stroke: var(--red); stroke-width: 1; stroke-dasharray: 3 3; }
 .legend { display: flex; flex-wrap: wrap; gap: 14px; color: var(--muted); font-size: 12px; }
 .legend i { display: inline-block; width: 10px; height: 10px; border-radius: 2px; margin-right: 4px; vertical-align: -1px; }

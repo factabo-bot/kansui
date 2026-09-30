@@ -4,7 +4,7 @@
 //        ＋ ntfyのデータ用トピックの最新1通（最大15分遅れの値）
 // 設計：vault 30_Blueberry/ベランダ_日射比例潅水_データ記録と遠隔設定_設計.md
 
-const APP_VER = '1.0.0';
+const APP_VER = '1.1.0';
 const LS_KEY = 'kansui-app';
 const DEFAULT_REPO = 'factabo-bot/veranda-kansui';
 const JST = 9 * 3600;
@@ -376,8 +376,9 @@ async function renderToday(page, key) {
     ${stat('給水量', ml != null ? fmtN(ml) : fmtN(sum.pumpS), ml != null ? 'mL' : '秒')}
   </div>`;
 
-  html += `<h2>日射（15分ごと）</h2>${dayChart(key, sum, isToday)}
-    <div class="legend"><span><i style="background:var(--bar)"></i>日射の積算</span><span><i style="background:var(--green)"></i>給水</span>${isToday ? '<span><i style="background:var(--red)"></i>いま</span>' : ''}</div>`;
+  html += `<h2>日射（15分ごと）</h2><p class="hint">棒をタップするか、指でなぞると、その15分の数字が下に出ます。</p>${dayChart(key, sum, isToday)}
+    <div class="legend"><span><i style="background:var(--bar)"></i>日射の積算</span><span><i style="background:var(--green)"></i>給水</span>${isToday ? '<span><i style="background:var(--red)"></i>いま</span>' : ''}</div>
+    <div id="bin-info" class="bin-info"></div>`;
 
   html += '<h2>給水</h2>';
   if (!sum.shots.length) html += '<p class="muted">この日の給水はありません。</p>';
@@ -396,6 +397,7 @@ async function renderToday(page, key) {
   else html += `<div class="list">${tank.map(t => `<div class="row" style="cursor:default"><div class="main"><div class="name">${esc(t.text)}</div><div class="desc num">${hmOf(t.ts)}ごろ</div></div></div>`).join('')}</div>`;
 
   page.innerHTML = html;
+  bindDayChart(key, sum);
   const go = k => { location.hash = k === todayKey() ? '#today' : `#today/${k}`; };
   $('#d-prev').onclick = () => go(addDays(key, -1));
   $('#d-next').onclick = () => { if (!isToday) go(addDays(key, 1)); };
@@ -412,15 +414,63 @@ function tankEvents(bins) {
   }
   return out;
 }
+const DAY_CHART = { W: 700, H: 190, L: 34, R: 8, T: 16, B: 22 };
+// グラフの棒をタップ・なぞると、その15分の数字を出す
+function bindDayChart(key, sum) {
+  const svg = $('#daychart'), info = $('#bin-info'), sel = $('#bin-sel');
+  if (!svg || !info) return;
+  const { W, L, R, T, H, B } = DAY_CHART;
+  const iw = W - L - R, ih = H - T - B;
+  const a = dayStart(key);
+  const byStart = new Map(sum.bins.map(r => [r.ts, r]));
+  const show = binTs => {
+    const r = byStart.get(binTs);
+    const shots = sum.shots.filter(s => s.ts >= binTs && s.ts < binTs + 900);
+    sel.setAttribute('x', L + ((binTs - a) / 86400) * iw);
+    sel.setAttribute('width', iw / 96);
+    sel.removeAttribute('hidden');
+    let h = `<div class="bin-head num">${hmOf(binTs)}〜${hmOf(binTs + 900)}</div>`;
+    if (!r) h += '<p class="muted small">この15分の記録はありません。</p>';
+    else {
+      h += '<div class="props">';
+      h += prop('日射の積算', `<span class="num">${fmtN(r.solar_vs, 1)} V・秒</span> <span class="muted small">平均 ${fmtN(r.solar_vs / 900, 2)} V</span>`);
+      h += prop('いちばん強いとき', `<span class="num">${fmtN(r.solar_max_v, 2)} V</span>`);
+      h += prop('電池', r.bat_v ? `<span class="num">${fmtN(r.bat_v, 2)} V</span>` : '—');
+      h += prop('タンク', r.refill_low ? '<span class="tag red">水が少ない</span>' : '<span class="tag green">水あり</span>');
+      h += '</div>';
+    }
+    if (shots.length) h += `<div class="props">${prop('給水', shots.map(s => `${hmOf(s.ts)} ${esc(KIND_JA[s.kind] || s.kind)} ${s.sec}秒`).join('<br>'))}</div>`;
+    info.innerHTML = h;
+  };
+  const pick = ev => {
+    const rect = svg.getBoundingClientRect();
+    const xs = ((ev.clientX - rect.left) / rect.width) * W;
+    const frac = clamp((xs - L) / iw, 0, 0.9999);
+    show(a + Math.floor((frac * 86400) / 900) * 900);
+  };
+  let down = false;
+  svg.addEventListener('pointerdown', ev => { down = true; try { svg.setPointerCapture(ev.pointerId); } catch (e) { /* 古いブラウザ */ } pick(ev); });
+  svg.addEventListener('pointermove', ev => { if (down || ev.pointerType === 'mouse') pick(ev); });
+  svg.addEventListener('pointerup', () => { down = false; });
+  svg.addEventListener('pointercancel', () => { down = false; });
+  // 最初は、記録のある最後の15分（今日）か、日射のいちばん多い15分（ほかの日）を出す
+  if (sum.bins.length) {
+    const first = key === todayKey() ? sum.bins[sum.bins.length - 1] : sum.bins.reduce((m, r) => (r.solar_vs > m.solar_vs ? r : m), sum.bins[0]);
+    show(first.ts);
+  } else {
+    info.innerHTML = '<p class="muted small">この日の記録はありません。</p>';
+  }
+}
 function dayChart(key, sum, isToday) {
-  const W = 700, H = 190, L = 34, R = 8, T = 16, B = 22;
+  const { W, H, L, R, T, B } = DAY_CHART;
   const iw = W - L - R, ih = H - T - B;
   const a = dayStart(key);
   const maxV = Math.max(900, ...sum.bins.map(r => r.solar_vs));
   const top = Math.ceil(maxV / 300) * 300;
   const x = ts => L + ((ts - a) / 86400) * iw;
   const y = v => T + ih - (v / top) * ih;
-  let s = `<svg class="chart" viewBox="0 0 ${W} ${H}" role="img" aria-label="15分ごとの日射の積算と給水の時刻">`;
+  let s = `<svg class="chart daychart" id="daychart" viewBox="0 0 ${W} ${H}" role="img" aria-label="15分ごとの日射の積算と給水の時刻">
+    <rect id="bin-sel" class="binsel" x="0" y="${T - 8}" width="0" height="${ih + 8}" hidden/>`;
   for (let i = 0; i <= 3; i++) { const v = (top / 3) * i; s += `<line class="grid" x1="${L}" x2="${W - R}" y1="${y(v)}" y2="${y(v)}"/><text x="${L - 4}" y="${y(v) + 3}" text-anchor="end">${fmtN(v)}</text>`; }
   for (let h = 0; h <= 24; h += 3) s += `<text x="${x(a + h * 3600)}" y="${H - 6}" text-anchor="middle">${h}時</text>`;
   const bw = iw / 96 - 1;
