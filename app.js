@@ -4,7 +4,7 @@
 //        ＋ ntfyのデータ用トピックの最新1通（最大15分遅れの値）
 // 設計：vault 30_Blueberry/ベランダ_日射比例潅水_データ記録と遠隔設定_設計.md
 
-const APP_VER = '1.3.1';
+const APP_VER = '1.4.0';
 const LS_KEY = 'kansui-app';
 const DEFAULT_REPO = 'factabo-bot/veranda-kansui';
 const JST = 9 * 3600;
@@ -590,7 +590,8 @@ async function renderHistory(page) {
   if (peaks.length) {
     html += callout('info', `この期間の「最大1時間の日射」は、いちばん多い日で <b class="num">${fmtN(Math.max(...peaks))}</b> V・秒、平均で <b class="num">${fmtN(peaks.reduce((a, b) => a + b, 0) / peaks.length)}</b> V・秒でした。日射比例のしきい値を決める目安になります。`);
   }
-  html += `<h2>${esc(M.label)}</h2>${historyChart(days, M)}`;
+  if (metric === 'bat') html += `<h2>電池の電圧（15分ごと）</h2>${batteryChart(dayStart(start), dayStart(end) + 86400)}`;
+  else html += `<h2>${esc(M.label)}</h2>${historyChart(days, M)}`;
   html += `<h2>日ごと</h2><div class="table-wrap"><table class="db"><thead><tr>
       <th>日付</th><th class="r">最大1時間</th><th class="r">日射合計</th><th class="r">給水</th><th class="r">量</th><th class="r">電池</th><th>タンク</th></tr></thead><tbody>`;
   for (const d of [...days].reverse()) {
@@ -605,6 +606,51 @@ async function renderHistory(page) {
   page.querySelectorAll('#seg-range button').forEach(b => b.onclick = () => { S.view.range = Number(b.dataset.v); render(); });
   page.querySelectorAll('#seg-metric button').forEach(b => b.onclick = () => { S.view.metric = b.dataset.v; render(); });
   page.querySelectorAll('tr[data-day]').forEach(tr => tr.onclick = () => { location.hash = `#today/${tr.dataset.day}`; });
+}
+// 電池の電圧の折れ線。1時間以上記録が途切れた所は線をつながない。急に上がった所（充電）に印を付ける
+function batteryChart(fromTs, toTs) {
+  const pts = binsBetween(fromTs, toTs).filter(r => r.bat_v).map(r => ({ ts: r.ts, v: r.bat_v }));
+  if (pts.length < 2) return '<p class="muted">電池の記録がまだ足りません。</p>';
+  const W = 400, H = 220, L = 34, R = 6, T = 12, B = 22;
+  const iw = W - L - R, ih = H - T - B;
+  const a0 = Math.max(fromTs, pts[0].ts - 3600), a1 = Math.min(toTs, Math.max(nowTs(), pts[pts.length - 1].ts + 900));
+  const vs = pts.map(p => p.v);
+  const lo = Math.floor((Math.min(...vs) - 0.05) * 10) / 10, hi = Math.ceil((Math.max(...vs) + 0.05) * 10) / 10;
+  const x = ts => L + ((ts - a0) / (a1 - a0)) * iw;
+  const y = v => T + ih - ((v - lo) / (hi - lo)) * ih;
+  let s = `<svg class="chart" viewBox="0 0 ${W} ${H}" role="img" aria-label="電池の電圧の推移">`;
+  const steps = Math.round((hi - lo) / 0.1);
+  const every = steps > 8 ? Math.ceil(steps / 6) : 1;
+  for (let i = 0; i <= steps; i += every) { const v = lo + i * 0.1; s += `<line class="grid" x1="${L}" x2="${W - R}" y1="${y(v)}" y2="${y(v)}"/><text x="${L - 3}" y="${y(v) + 3}" text-anchor="end">${v.toFixed(1)}</text>`; }
+  const days = (a1 - a0) / 86400;
+  const stepD = days > 31 ? 14 : days > 14 ? 5 : days > 7 ? 2 : 1;
+  for (let d = dayStart(dayKeyOf(a0)) + 86400, i = 0; d < a1; d += 86400, i++) {
+    if (i % stepD) continue;
+    const k = dayKeyOf(d + 3600);
+    s += `<line class="grid" x1="${x(d)}" x2="${x(d)}" y1="${T}" y2="${T + ih}" opacity=".5"/><text x="${x(d)}" y="${H - 6}" text-anchor="middle">${Number(k.slice(5, 7))}/${Number(k.slice(8))}</text>`;
+  }
+  let path = '', charges = [];
+  pts.forEach((p, i) => {
+    const prev = pts[i - 1];
+    const gap = !prev || p.ts - prev.ts > 3600;
+    path += `${gap ? 'M' : 'L'}${x(p.ts).toFixed(1)},${y(p.v).toFixed(1)}`;
+    if (prev && p.v - prev.v >= 0.25) charges.push(p.ts);
+  });
+  s += `<path d="${path}" fill="none" stroke="var(--bar-strong)" stroke-width="1.8" stroke-linejoin="round"/>`;
+  for (const c of charges) s += `<line class="nowline" x1="${x(c)}" x2="${x(c)}" y1="${T}" y2="${T + ih}" style="stroke:var(--green)"/><text x="${x(c) + 3}" y="${T + 10}" text-anchor="start" style="fill:var(--green)">充電</text>`;
+  s += '</svg>';
+  // 直近3日（前回の充電より後）の下がり方
+  const lastCharge = charges.length ? charges[charges.length - 1] : -Infinity;
+  const recent = pts.filter(p => p.ts >= Math.max(lastCharge, nowTs() - 3 * 86400));
+  let note = `いまの電圧は <b class="num">${fmtN(pts[pts.length - 1].v, 2)}</b> V です。`;
+  if (recent.length >= 8 && recent[recent.length - 1].ts - recent[0].ts >= 86400) {
+    const n = recent.length, mx = recent.reduce((a, p) => a + p.ts, 0) / n, my = recent.reduce((a, p) => a + p.v, 0) / n;
+    const slope = recent.reduce((a, p) => a + (p.ts - mx) * (p.v - my), 0) / recent.reduce((a, p) => a + (p.ts - mx) ** 2, 0);
+    note += ` 直近の下がり方は1日あたり約 <b class="num">${fmtN(-slope * 86400, 3)}</b> V です。`;
+  }
+  if (charges.length) note += ` 前回の充電は ${esc(dayLabel(dayKeyOf(lastCharge)))} です。`;
+  s += `<p class="hint">${note}この電池（リン酸鉄リチウム）は残量が変わっても電圧があまり変わらないので、「残り何%」の目安にはなりません。下がり方が急になってきたら充電どきです。</p>`;
+  return s;
 }
 function historyChart(days, M) {
   const W = 700, H = 180, L = 40, R = 8, T = 10, B = 22;
