@@ -4,7 +4,7 @@
 //        ＋ ntfyのデータ用トピックの最新1通（最大15分遅れの値）
 // 設計：vault 30_Blueberry/ベランダ_日射比例潅水_データ記録と遠隔設定_設計.md
 
-const APP_VER = '1.3.0';
+const APP_VER = '1.3.1';
 const LS_KEY = 'kansui-app';
 const DEFAULT_REPO = 'factabo-bot/veranda-kansui';
 const JST = 9 * 3600;
@@ -158,18 +158,28 @@ async function loadLatest() {
   }
   if (!S.topics?.data) return;
   try {
-    const res = await fetch(`https://ntfy.sh/${encodeURIComponent(S.topics.data)}/json?poll=1&since=latest`, { cache: 'no-store' });
+    // 最新1通だけだと、装置が再起動した直後は中身が空になる。リポジトリに取り込まれる前の分も拾うため、直近6時間分をまとめて読む
+    const res = await fetch(`https://ntfy.sh/${encodeURIComponent(S.topics.data)}/json?poll=1&since=6h`, { cache: 'no-store' });
     if (!res.ok) return;
-    const lines = (await res.text()).trim().split('\n').filter(Boolean);
-    if (!lines.length) return;
-    const ev = JSON.parse(lines[lines.length - 1]);
-    const m = JSON.parse(ev.message || '{}');
-    if (m.v !== 1) return;
+    const q = new Map(), sh = new Map();
+    let last = null, lastNow = null;
+    for (const line of (await res.text()).split('\n')) {
+      if (!line.trim()) continue;
+      let ev, m;
+      try { ev = JSON.parse(line); m = JSON.parse(ev.message || '{}'); } catch (e) { continue; }
+      if (m.v !== 1) continue;
+      for (const a of m.q || []) q.set(a[0], { ts: a[0], solar_vs: a[1], solar_max_v: a[2] / 100, bat_v: a[3] ? a[3] / 100 : null, refill_low: !!a[4], shots: a[5], pump_s: a[6] });
+      for (const a of m.s || []) sh.set(`${a[0]}-${a[1]}`, { ts: a[0], kind: { m: 'manual', f: 'fixed', a: 'solar' }[a[1]] || a[1], sec: a[2] });
+      if (!last || ev.time >= last.ev.time) last = { ev, m };
+      // 再起動の直後は測る前の0が入っているので、電池が0の「いま」は使わない
+      if (m.now && m.now[2] > 0 && (!lastNow || m.now[0] >= lastNow[0])) lastNow = m.now;
+    }
+    if (!last) return;
     S.latest = {
-      received: ev.time, fw: m.fw, cfg: m.cfg, p: m.p,
-      now: m.now ? { ts: m.now[0], solar_v: m.now[1] / 100, bat_v: m.now[2] ? m.now[2] / 100 : null, refill_low: !!m.now[3] } : null,
-      q: (m.q || []).map(a => ({ ts: a[0], solar_vs: a[1], solar_max_v: a[2] / 100, bat_v: a[3] ? a[3] / 100 : null, refill_low: !!a[4], shots: a[5], pump_s: a[6] })),
-      s: (m.s || []).map(a => ({ ts: a[0], kind: { m: 'manual', f: 'fixed', a: 'solar' }[a[1]] || a[1], sec: a[2] })),
+      received: last.ev.time, fw: last.m.fw, cfg: last.m.cfg, p: last.m.p,
+      now: lastNow ? { ts: lastNow[0], solar_v: lastNow[1] / 100, bat_v: lastNow[2] / 100, refill_low: !!lastNow[3] } : null,
+      q: [...q.values()],
+      s: [...sh.values()],
     };
   } catch (e) { /* 最新が取れなくてもリポジトリの記録で表示する */ }
 }
