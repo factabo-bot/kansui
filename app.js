@@ -4,7 +4,7 @@
 //        ＋ ntfyのデータ用トピックの最新1通（最大15分遅れの値）
 // 設計：vault 30_Blueberry/ベランダ_日射比例潅水_データ記録と遠隔設定_設計.md
 
-const APP_VER = '1.4.0';
+const APP_VER = '1.5.0';
 const LS_KEY = 'kansui-app';
 const DEFAULT_REPO = 'factabo-bot/veranda-kansui';
 const JST = 9 * 3600;
@@ -318,7 +318,7 @@ async function saveDraft() {
     });
     S.programs = d; S.draft = clone(d); S.programsSha = res.content.sha;
     if (S.status) S.status.cfg_latest = d.version;
-    toast('保存しました。15分ほどで装置に届きます', 3500);
+    toast('保存しました。数分で装置に届きます（23時〜5時は15分ほど）', 3500);
   } catch (e) {
     toast(errText(e), 5000);
   } finally {
@@ -386,7 +386,7 @@ async function renderToday(page, key) {
     html += '<div class="props">';
     html += prop('プログラム', `${esc(progName(pf?.id))}${pf?.by === 'override' ? ' <span class="tag yellow">期間の上書き</span>' : ''}`);
     if (cfgApplied != null && cfgLatest != null) {
-      html += prop('設定の反映', cfgApplied >= cfgLatest ? '<span class="tag green">反映済み</span>' : '<span class="tag yellow">反映待ち</span> <span class="muted small">15分ほどで届きます</span>');
+      html += prop('設定の反映', cfgApplied >= cfgLatest ? '<span class="tag green">反映済み</span>' : '<span class="tag yellow">反映待ち</span> <span class="muted small">数分で届きます（23時〜5時は15分ほど）</span>');
     }
     if (now) {
       html += prop('電池', now.bat_v ? `<span class="num">${fmtN(now.bat_v, 2)} V</span>` : '—');
@@ -440,6 +440,20 @@ async function renderToday(page, key) {
   $('#d-next').onclick = () => { if (!isToday) go(addDays(key, 1)); };
   $('#d-pick').onchange = e => { if (e.target.value) go(e.target.value); };
   const tb = $('#d-today'); if (tb) tb.onclick = () => go(todayKey());
+  watchApply(isToday && cfgApplied != null && cfgLatest != null && cfgApplied < cfgLatest);
+}
+// 「反映待ち」の間は、30秒ごとに装置からの記録を読み直し、届いたら画面を更新する
+let applyTimer = null;
+function watchApply(waiting) {
+  clearTimeout(applyTimer); applyTimer = null;
+  if (!waiting) return;
+  applyTimer = setTimeout(async () => {
+    if (document.visibilityState !== 'visible' || route().name !== 'today' || isDirty()) { watchApply(true); return; }
+    await loadLatest();
+    const applied = S.latest?.cfg ?? S.status?.cfg_applied;
+    if (applied != null && applied >= (S.programs?.version ?? 0)) rerenderSoft();   // 届いたときだけ描き直す（30秒ごとのちらつきを避ける）
+    else watchApply(true);
+  }, 30000);
 }
 function prop(k, vHtml) { return `<div class="prop"><div class="k">${esc(k)}</div><div class="v">${vHtml}</div></div>`; }
 function stat(k, v, unit) { return `<div class="stat"><div class="k">${esc(k)}</div><div class="v">${v}<small>${esc(unit)}</small></div></div>`; }
