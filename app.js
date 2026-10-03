@@ -4,7 +4,7 @@
 //        ＋ ntfyのデータ用トピックの最新1通（最大15分遅れの値）
 // 設計：vault 30_Blueberry/ベランダ_日射比例潅水_データ記録と遠隔設定_設計.md
 
-const APP_VER = '1.5.0';
+const APP_VER = '1.6.0';
 const LS_KEY = 'kansui-app';
 const DEFAULT_REPO = 'factabo-bot/veranda-kansui';
 const JST = 9 * 3600;
@@ -383,6 +383,14 @@ async function renderToday(page, key) {
   if (isToday) {
     if (!lastTs) html += callout('warn', 'まだ装置から記録が届いていません。');
     else if (nowTs() - lastTs > 40 * 60) html += callout('warn', `最後に記録が届いたのは${esc(ago(lastTs))}（${esc(hmOf(lastTs))}）です。Wi-Fiか電池を確かめてください。`);
+  }
+
+  // 日射のグラフをいちばん上に（開いてすぐ見えるように）
+  html += `${dayChart(key, sum, isToday)}
+    <div class="legend"><span><i style="background:var(--bar)"></i>日射の積算</span><span><i style="background:var(--green)"></i>給水</span>${isToday ? '<span><i style="background:var(--red)"></i>いま</span>' : ''}</div>
+    <div id="bin-info" class="bin-info"></div>`;
+
+  if (isToday) {
     html += '<div class="props">';
     html += prop('プログラム', `${esc(progName(pf?.id))}${pf?.by === 'override' ? ' <span class="tag yellow">期間の上書き</span>' : ''}`);
     if (cfgApplied != null && cfgLatest != null) {
@@ -406,10 +414,6 @@ async function renderToday(page, key) {
     ${stat('給水', sum.nShots, '回')}
     ${stat('給水量', ml != null ? fmtN(ml) : fmtN(sum.pumpS), ml != null ? 'mL' : '秒')}
   </div>`;
-
-  html += `<h2>日射（15分ごと）</h2><p class="hint">棒をタップするか、指でなぞると、その15分の数字が下に出ます。</p>${dayChart(key, sum, isToday)}
-    <div class="legend"><span><i style="background:var(--bar)"></i>日射の積算</span><span><i style="background:var(--green)"></i>給水</span>${isToday ? '<span><i style="background:var(--red)"></i>いま</span>' : ''}</div>
-    <div id="bin-info" class="bin-info"></div>`;
 
   html += '<h2>給水</h2>';
   if (!sum.shots.length) html += '<p class="muted">この日の給水はありません。</p>';
@@ -465,7 +469,9 @@ function tankEvents(bins) {
   }
   return out;
 }
-const DAY_CHART = { W: 400, H: 230, L: 30, R: 6, T: 14, B: 22 };
+const DAY_CHART = { W: 400, H: 230, L: 34, R: 6, T: 14, B: 22 };
+// 15分の日射の縦軸の上限 [V・秒]。セルの満日射（約1.65V）×900秒≒1,485。2026-10-01の最大は859
+const DAY_TOP_VS = 1500, DAY_TICK_VS = 300;
 // 表示する時間の範囲。ふだんは日中（5〜19時。暗くない記録があればその分広げる）、切り替えで24時間
 function dayRange(key, sum) {
   const a = dayStart(key);
@@ -477,12 +483,6 @@ function dayRange(key, sum) {
     s = Math.min(s, Math.floor(h)); e = Math.max(e, Math.ceil(h + 0.25));
   }
   return [a + s * 3600, a + e * 3600];
-}
-function niceTop(v) {
-  const x = Math.max(v * 1.1, 20);
-  const mag = Math.pow(10, Math.floor(Math.log10(x)));
-  for (const m of [1, 1.2, 1.5, 2, 2.5, 3, 4, 5, 6, 8, 10]) if (x <= m * mag) return m * mag;
-  return 10 * mag;
 }
 // グラフの棒をタップ・なぞると、その15分の数字を出す
 function bindDayChart(key, sum) {
@@ -536,14 +536,16 @@ function dayChart(key, sum, isToday) {
   const iw = W - L - R, ih = H - T - B;
   const [a0, a1] = dayRange(key, sum);
   const bins = sum.bins.filter(r => r.ts >= a0 && r.ts < a1);
-  const top = niceTop(Math.max(0, ...bins.map(r => r.solar_vs)));
+  // 縦軸はほかの日と比べやすいよう固定。快晴の真夏でもまず超えない値にし、超えた日だけ広げる
+  const maxV = Math.max(0, ...bins.map(r => r.solar_vs));
+  const top = maxV <= DAY_TOP_VS ? DAY_TOP_VS : Math.ceil(maxV / DAY_TICK_VS) * DAY_TICK_VS;
   const x = ts => L + ((ts - a0) / (a1 - a0)) * iw;
   const y = v => T + ih - (v / top) * ih;
   const hours = (a1 - a0) / 3600;
-  let s = `<div class="seg chart-seg" id="seg-day"><button data-v="0" class="${S.view.dayFull ? '' : 'on'}">日中</button><button data-v="1" class="${S.view.dayFull ? 'on' : ''}">24時間</button></div>
+  let s = `<div class="chart-head"><h2>日射（15分ごと）</h2><div class="seg chart-seg" id="seg-day"><button data-v="0" class="${S.view.dayFull ? '' : 'on'}">日中</button><button data-v="1" class="${S.view.dayFull ? 'on' : ''}">24時間</button></div></div>
     <svg class="chart daychart" id="daychart" viewBox="0 0 ${W} ${H}" role="img" aria-label="15分ごとの日射の積算と給水の時刻">
     <rect id="bin-sel" class="binsel" x="0" y="${T - 8}" width="0" height="${ih + 8}" hidden/>`;
-  for (let i = 0; i <= 4; i++) { const v = (top / 4) * i; s += `<line class="grid" x1="${L}" x2="${W - R}" y1="${y(v)}" y2="${y(v)}"/><text x="${L - 3}" y="${y(v) + 3}" text-anchor="end">${fmtN(v)}</text>`; }
+  for (let v = 0; v <= top; v += DAY_TICK_VS) s += `<line class="grid" x1="${L}" x2="${W - R}" y1="${y(v)}" y2="${y(v)}"/><text x="${L - 3}" y="${y(v) + 3}" text-anchor="end">${fmtN(v)}</text>`;
   const step = hours > 16 ? 3 : 2;
   const h0 = Math.round((a0 - dayStart(key)) / 3600);
   for (let h = Math.ceil(h0 / step) * step; h <= h0 + hours; h += step) {
@@ -564,7 +566,8 @@ function dayChart(key, sum, isToday) {
   }
   if (isToday) { const n = nowTs(); if (n >= a0 && n < a1) { const cx = x(n); s += `<line class="nowline" x1="${cx}" x2="${cx}" y1="${T}" y2="${T + ih}"/>`; } }
   s += '</svg>';
-  const notes = [];
+  const notes = ['棒をタップするか指でなぞると、その15分の数字が下に出ます。'];
+  if (top > DAY_TOP_VS) notes.push(`この日は日射が強く、縦軸を${fmtN(top)}まで広げています。`);
   if (peakStart != null) notes.push(`濃い色は、この日いちばん日射が多かった1時間（${hmOf(peakStart)}〜）です。`);
   if (outside) notes.push(`グラフの範囲の外に給水が${outside}回あります（下の一覧を見てください）。`);
   if (notes.length) s += `<p class="hint">${notes.join('')}</p>`;

@@ -161,6 +161,9 @@ input.in.w-full, textarea.in.w-full { width: 100%; }
 .chart .shot { stroke: var(--green); stroke-width: 2; }
 .chart .shotdot { fill: var(--green); }
 .chart-seg { margin: 4px 0 2px; }
+.chart-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin: 14px 0 4px; }
+.chart-head h2 { margin: 0; }
+.chart-head .chart-seg { margin: 0; }
 .chart-seg button { padding: 3px 12px; font-size: 13px; }
 .chart.daychart { touch-action: pan-y; cursor: crosshair; user-select: none; -webkit-user-select: none; }
 .chart .binsel { fill: var(--text); opacity: 0.12; }
