@@ -4,7 +4,7 @@
 //        ＋ ntfyのデータ用トピックの最新1通（最大15分遅れの値）
 // 設計：vault 30_Blueberry/ベランダ_日射比例潅水_データ記録と遠隔設定_設計.md
 
-const APP_VER = '1.6.0';
+const APP_VER = '1.6.1';
 const LS_KEY = 'kansui-app';
 const DEFAULT_REPO = 'factabo-bot/veranda-kansui';
 const JST = 9 * 3600;
@@ -375,22 +375,19 @@ async function renderToday(page, key) {
       <button class="icon-btn" id="d-prev" aria-label="前の日">‹</button>
       <input type="date" id="d-pick" value="${key}" max="${todayKey()}" aria-label="日付">
       <button class="icon-btn" id="d-next" aria-label="次の日" ${isToday ? 'disabled' : ''}>›</button>
-      ${isToday ? '' : '<button class="btn ghost small" id="d-today">今日へ</button>'}
+      <button class="btn ghost small" id="d-today" ${isToday ? 'style="visibility:hidden" tabindex="-1" aria-hidden="true"' : ''}>今日へ</button>
     </div>
     <h1 class="title">${isToday ? '今日' : esc(dayLabel(key))}</h1>
-    <p class="subtitle">${isToday ? esc(dayLabel(key)) : ''}</p>`;
+    <p class="subtitle">${isToday ? esc(dayLabel(key)) : `${Math.round((dayStart(todayKey()) - dayStart(key)) / 86400)}日前`}</p>`;   // どの日も同じ行数にして（今日へボタンも今日は見えないだけ）、グラフの高さをそろえる
 
-  if (isToday) {
-    if (!lastTs) html += callout('warn', 'まだ装置から記録が届いていません。');
-    else if (nowTs() - lastTs > 40 * 60) html += callout('warn', `最後に記録が届いたのは${esc(ago(lastTs))}（${esc(hmOf(lastTs))}）です。Wi-Fiか電池を確かめてください。`);
-  }
-
-  // 日射のグラフをいちばん上に（開いてすぐ見えるように）
+  // 日射のグラフをいちばん上に（開いてすぐ見えるように）。どの日も同じ高さに来るよう、警告はグラフの下に出す
   html += `${dayChart(key, sum, isToday)}
     <div class="legend"><span><i style="background:var(--bar)"></i>日射の積算</span><span><i style="background:var(--green)"></i>給水</span>${isToday ? '<span><i style="background:var(--red)"></i>いま</span>' : ''}</div>
     <div id="bin-info" class="bin-info"></div>`;
 
   if (isToday) {
+    if (!lastTs) html += callout('warn', 'まだ装置から記録が届いていません。');
+    else if (nowTs() - lastTs > 40 * 60) html += callout('warn', `最後に記録が届いたのは${esc(ago(lastTs))}（${esc(hmOf(lastTs))}）です。Wi-Fiか電池を確かめてください。`);
     html += '<div class="props">';
     html += prop('プログラム', `${esc(progName(pf?.id))}${pf?.by === 'override' ? ' <span class="tag yellow">期間の上書き</span>' : ''}`);
     if (cfgApplied != null && cfgLatest != null) {
