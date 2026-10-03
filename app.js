@@ -4,7 +4,7 @@
 //        ＋ ntfyのデータ用トピックの最新1通（最大15分遅れの値）
 // 設計：vault 30_Blueberry/ベランダ_日射比例潅水_データ記録と遠隔設定_設計.md
 
-const APP_VER = '1.7.0';
+const APP_VER = '1.7.1';
 const LS_KEY = 'kansui-app';
 const DEFAULT_REPO = 'factabo-bot/veranda-kansui';
 const JST = 9 * 3600;
@@ -849,7 +849,8 @@ function viewSettings() {
   html += `<h2>GitHubの鍵</h2>
     <div class="field"><label for="s-token">鍵</label><div class="ctl"><input class="in w-full" type="password" id="s-token" value="${esc(st.token)}" placeholder="github_pat_…" autocomplete="off"></div></div>
     <div class="field"><label for="s-repo">保存先</label><div class="ctl"><input class="in w-full" id="s-repo" value="${esc(st.repo)}"></div></div>
-    <div class="btns"><button class="btn primary" id="s-save">鍵を保存して読み込む</button>${st.token ? '<button class="btn danger" id="s-clear">鍵を消す</button>' : ''}</div>`;
+    <div class="btns"><button class="btn primary" id="s-save">鍵を保存して読み込む</button>${st.token ? '<button class="btn" id="s-copy">鍵をコピー</button><button class="btn danger" id="s-clear">鍵を消す</button>' : ''}</div>
+    ${st.token ? '<p class="hint">「鍵をコピー」は、別のブラウザ（Samsung Internetなど）に鍵を移すときに使います。貼り付けたら、ほかの場所には貼らないでください。</p>' : ''}`;
   if (S.error && S.error !== 'no-token' && S.error !== 'no-repo') html += callout('err', esc(S.error));
   if (S.error === 'no-repo') html += callout('err', '保存先が見つかりません。鍵の対象に veranda-kansui が入っているか確かめてください。');
 
@@ -883,6 +884,10 @@ function bindSettings() {
     render();
   };
   const cl = $('#s-clear'); if (cl) cl.onclick = () => { if (!confirm('このスマホから鍵を消しますか？')) return; S.settings.token = ''; saveSettings(); S.error = 'no-token'; render(); };
+  const cp = $('#s-copy'); if (cp) cp.onclick = async () => {
+    try { await navigator.clipboard.writeText(S.settings.token); toast('鍵をコピーしました'); }
+    catch (e) { const el = $('#s-token'); el.type = 'text'; el.select(); toast('自動でコピーできませんでした。表示した鍵を長押ししてコピーしてください', 5000); }
+  };
   const rl = $('#s-reload'); if (rl) rl.onclick = async () => { await loadCore(); toast(S.error ? '読み込めませんでした' : '読み直しました'); render(); };
   const c = S.draft?.common; if (!c) return;
   const bind = (sel, fn) => { const el = $(sel); if (el) el.onchange = () => { fn(Number(el.value)); updateSavebar(); }; };
