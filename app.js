@@ -4,7 +4,7 @@
 //        ＋ ntfyのデータ用トピックの最新1通（最大15分遅れの値）
 // 設計：vault 30_Blueberry/ベランダ_日射比例潅水_データ記録と遠隔設定_設計.md
 
-const APP_VER = '1.6.3';
+const APP_VER = '1.6.4';
 const LS_KEY = 'kansui-app';
 const DEFAULT_REPO = 'factabo-bot/veranda-kansui';
 const JST = 9 * 3600;
