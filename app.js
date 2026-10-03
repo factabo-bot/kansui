@@ -4,7 +4,7 @@
 //        ＋ ntfyのデータ用トピックの最新1通（最大15分遅れの値）
 // 設計：vault 30_Blueberry/ベランダ_日射比例潅水_データ記録と遠隔設定_設計.md
 
-const APP_VER = '1.7.4';
+const APP_VER = '1.7.5';
 const LS_KEY = 'kansui-app';
 const DEFAULT_REPO = 'factabo-bot/veranda-kansui';
 const JST = 9 * 3600;
@@ -238,7 +238,7 @@ function peakHour(bins) {
 function daySummary(key) {
   const a = dayStart(key), b = a + 86400;
   const bins = binsBetween(a, b), shots = shotsBetween(a, b);
-  const bats = bins.map(r => r.bat_v).filter(v => v);
+  const bats = bins.map(r => r.bat_v).filter(batOk);
   return {
     key, bins, shots,
     sol: bins.reduce((s, r) => s + r.solar_vs, 0),
@@ -249,6 +249,8 @@ function daySummary(key) {
     refillLow: bins.some(r => r.refill_low),
   };
 }
+// 10V未満は電池を外していたときの読み（0Vに補正分が足された値）なので、電池の値として扱わない
+function batOk(v) { return v >= 10; }
 function mlOf(sec) { const f = S.draft?.common?.flow_ml_s || S.programs?.common?.flow_ml_s || 0; return f > 0 ? sec * f : null; }
 
 // ---- 潅水プログラム ----------------------------------------------------------
@@ -358,7 +360,7 @@ async function render() {
 }
 function callout(kind, html) { return `<div class="callout ${kind}"><span class="mark"></span><div>${html}</div></div>`; }
 
-// ---- 今日 --------------------------------------------------------------------
+// ---- HOME（今日） --------------------------------------------------------------------
 async function renderToday(page, key) {
   const isToday = key === todayKey();
   await ensureMonths([key.slice(0, 7)]);
@@ -377,7 +379,7 @@ async function renderToday(page, key) {
       <button class="icon-btn" id="d-next" aria-label="次の日" ${isToday ? 'disabled' : ''}>›</button>
       <button class="btn ghost small" id="d-today" ${isToday ? 'style="visibility:hidden" tabindex="-1" aria-hidden="true"' : ''}>今日へ</button>
     </div>
-    <h1 class="title">${isToday ? '今日' : esc(dayLabel(key))}</h1>
+    <h1 class="title">${isToday ? 'HOME' : esc(dayLabel(key))}</h1>
     <p class="subtitle">${isToday ? esc(dayLabel(key)) : `${Math.round((dayStart(todayKey()) - dayStart(key)) / 86400)}日前`}</p>`;   // どの日も同じ行数にして（今日へボタンも今日は見えないだけ）、グラフの高さをそろえる
 
   // 日射のグラフをいちばん上に（開いてすぐ見えるように）。どの日も同じ高さに来るよう、警告はグラフの下に出す
@@ -394,7 +396,7 @@ async function renderToday(page, key) {
       html += prop('設定の反映', cfgApplied >= cfgLatest ? '<span class="tag green">反映済み</span>' : '<span class="tag yellow">反映待ち</span> <span class="muted small">数分で届きます（23時〜5時は15分ほど）</span>');
     }
     if (now) {
-      html += prop('電池', now.bat_v ? `<span class="num">${fmtN(now.bat_v, 2)} V</span>` : '—');
+      html += prop('電池', batOk(now.bat_v) ? `<span class="num">${fmtN(now.bat_v, 2)} V</span>` : '—');
       html += prop('タンク', now.refill_low ? '<span class="tag red">水が少ない</span>' : '<span class="tag green">水あり</span>');
       html += prop('いまの日射', `<span class="num">${fmtN(now.solar_v, 2)} V</span>`);
     }
@@ -501,7 +503,7 @@ function bindDayChart(key, sum) {
       h += '<div class="props">';
       h += prop('日射の積算', `<span class="num">${fmtN(r.solar_vs, 1)} V・秒</span> <span class="muted small">平均 ${fmtN(r.solar_vs / 900, 2)} V</span>`);
       h += prop('いちばん強いとき', `<span class="num">${fmtN(r.solar_max_v, 2)} V</span>`);
-      h += prop('電池', r.bat_v ? `<span class="num">${fmtN(r.bat_v, 2)} V</span>` : '—');
+      h += prop('電池', batOk(r.bat_v) ? `<span class="num">${fmtN(r.bat_v, 2)} V</span>` : '—');
       h += prop('タンク', r.refill_low ? '<span class="tag red">水が少ない</span>' : '<span class="tag green">水あり</span>');
       h += '</div>';
     }
@@ -607,7 +609,7 @@ async function renderHistory(page) {
   if (metric === 'bat') html += `<h2>電池の電圧（15分ごと）</h2>${batteryChart(dayStart(start), dayStart(end) + 86400)}`;
   else html += `<h2>${esc(M.label)}</h2>${historyChart(days, M)}`;
   html += `<h2>日ごと</h2><div class="table-wrap"><table class="db"><thead><tr>
-      <th>日付</th><th class="r">最大1時間</th><th class="r">日射合計</th><th class="r">給水</th><th class="r">量</th><th class="r">電池</th><th>タンク</th></tr></thead><tbody>`;
+      <th>日付</th><th class="r">最大1時間</th><th class="r">日射合計</th><th class="r">給水</th><th class="r">量</th><th class="r">電池<br><span class="muted small">最低</span></th><th>タンク</th></tr></thead><tbody>`;
   for (const d of [...days].reverse()) {
     const ml = mlOf(d.pumpS);
     html += `<tr class="link" data-day="${d.key}"><td>${esc(dayLabel(d.key))}</td>
@@ -623,7 +625,7 @@ async function renderHistory(page) {
 }
 // 電池の電圧の折れ線。1時間以上記録が途切れた所は線をつながない。急に上がった所（充電）に印を付ける
 function batteryChart(fromTs, toTs) {
-  const pts = binsBetween(fromTs, toTs).filter(r => r.bat_v).map(r => ({ ts: r.ts, v: r.bat_v }));
+  const pts = binsBetween(fromTs, toTs).filter(r => batOk(r.bat_v)).map(r => ({ ts: r.ts, v: r.bat_v }));
   if (pts.length < 2) return '<p class="muted">電池の記録がまだ足りません。</p>';
   const W = 400, H = 220, L = 34, R = 6, T = 12, B = 22;
   const iw = W - L - R, ih = H - T - B;
