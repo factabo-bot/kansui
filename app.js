@@ -2,7 +2,7 @@
 // ベランダ潅水アプリ
 // データ：GitHubの非公開リポジトリ（data/q15/*.jsonl, data/shots/*.jsonl, data/status.json, config/programs.json）
 //        ＋ ntfyのデータ用トピックの最新1通（最大15分遅れの値）
-// 設計：vault 30_Blueberry/ベランダ_日射比例潅水_データ記録と遠隔設定_設計.md
+// 設計：vault 30_Blueberry/ベランダ潅水装置/ベランダ_日射比例潅水_データ記録と遠隔設定_設計.md
 
 const APP_VER = '1.7.5';
 const LS_KEY = 'kansui-app';
