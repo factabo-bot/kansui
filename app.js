@@ -4,7 +4,7 @@
 //        ＋ ntfyのデータ用トピックの最新1通（最大15分遅れの値）
 // 設計：vault 30_Blueberry/ベランダ潅水装置/ベランダ_日射比例潅水_データ記録と遠隔設定_設計.md
 
-const APP_VER = '1.7.5';
+const APP_VER = '1.7.6';
 const LS_KEY = 'kansui-app';
 const DEFAULT_REPO = 'factabo-bot/veranda-kansui';
 const JST = 9 * 3600;
@@ -133,12 +133,36 @@ async function loadCore() {
       if (!S.draft || !isDirty()) S.draft = clone(S.programs);
     }
     S.files = {};
+    kickCollect();
     await loadLatest();
   } catch (e) {
     S.error = errText(e);
   } finally {
     S.loading = false;
   }
+}
+
+// GitHubの毎時の実行は混雑で飛ばされ、実際は2〜9時間おきだった（2026-10-06確認）。
+// 開いたときに取り込みが50分以上前なら、取り込みを起こす。結果は待たない（表示はntfyから直接読むので困らない）
+async function kickCollect() {
+  const last = parseIsoTs(S.status?.collected);
+  if (last && nowTs() - last < 50 * 60) return;
+  let kicked = 0;
+  try { kicked = Number(localStorage.getItem('kansui-kick') || 0); } catch (e) { /* 読めなくても動く */ }
+  if (nowTs() - kicked < 20 * 60) return;   // 取り込み中に何度も開いたとき、重ねて起こさない
+  try { localStorage.setItem('kansui-kick', String(nowTs())); } catch (e) { /* 保存できなくても動く */ }
+  try {
+    await fetch(`https://api.github.com/repos/${S.settings.repo}/dispatches`, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${S.settings.token}`,
+        Accept: 'application/vnd.github+json',
+        'X-GitHub-Api-Version': '2022-11-28',
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ event_type: 'collect' }),
+    });
+  } catch (e) { /* 起こせなくても表示は続ける */ }
 }
 
 async function loadLatest() {
