@@ -4,7 +4,7 @@
 //        ＋ ntfyのデータ用トピックの最新1通（最大15分遅れの値）
 // 設計：vault 30_Blueberry/ベランダ潅水装置/ベランダ_日射比例潅水_データ記録と遠隔設定_設計.md
 
-const APP_VER = '1.7.6';
+const APP_VER = '1.7.7';
 const LS_KEY = 'kansui-app';
 const DEFAULT_REPO = 'factabo-bot/veranda-kansui';
 const JST = 9 * 3600;
@@ -298,7 +298,7 @@ function describeProgram(p) {
 function newProgram() {
   return {
     id: 'p' + Date.now().toString(36), name: '新しいプログラム', memo: '',
-    fixed: [], prop: { on: false, thresh_vs: 0, sec: 10, interval_min: 20, start: '08:00', end: '16:00' },
+    fixed: [], prop: { on: false, thresh_vs: 0, sec: 30, interval_min: 20, start: '08:00', end: '16:00' },
     cutoff: '17:00', max_day: 16, max_action: 'notify',
   };
 }
@@ -835,7 +835,7 @@ function bindProgram(id) {
     p.fixed.sort((a, b) => toMin(a.time) - toMin(b.time)); rerenderSoft();
   });
   document.querySelectorAll('[data-fxdel]').forEach(el => el.onclick = () => { p.fixed.splice(Number(el.dataset.fxdel), 1); rerenderSoft(); });
-  const af = $('#add-fx'); if (af) af.onclick = () => { p.fixed.push({ time: p.fixed.length ? '12:00' : '06:00', sec: 10 }); p.fixed.sort((a, b) => toMin(a.time) - toMin(b.time)); rerenderSoft(); };
+  const af = $('#add-fx'); if (af) af.onclick = () => { p.fixed.push({ time: p.fixed.length ? '12:00' : '06:00', sec: 30 }); p.fixed.sort((a, b) => toMin(a.time) - toMin(b.time)); rerenderSoft(); };
   $('#pr-on').onchange = e => { p.prop.on = e.target.checked; rerenderSoft(); };
   const num = (sel, fn) => { const el = $(sel); if (el) el.onchange = () => { fn(Number(el.value)); rerenderSoft(); }; };
   num('#pr-th', v => { p.prop.thresh_vs = Math.max(0, v || 0); });
