@@ -4,7 +4,7 @@
 //        ＋ ntfyのデータ用トピックの最新1通（最大15分遅れの値）
 // 設計：vault 30_Blueberry/ベランダ潅水装置/ベランダ_日射比例潅水_データ記録と遠隔設定_設計.md
 
-const APP_VER = '1.7.8';
+const APP_VER = '1.8.0';
 const LS_KEY = 'kansui-app';
 const DEFAULT_REPO = 'factabo-bot/veranda-kansui';
 const JST = 9 * 3600;
@@ -20,6 +20,7 @@ const S = {
   latest: null,       // ntfyの最新1通（変換済み）
   loading: false, error: null,
   view: { range: 14, metric: 'peak', dayFull: false },
+  diag: null,         // 測定モード { start, samples: Map, es }
 };
 
 // ---- 小さな道具 -------------------------------------------------------------
@@ -365,7 +366,8 @@ function route() {
 }
 async function render() {
   const r = route();
-  document.querySelectorAll('.tabs a').forEach(a => a.classList.toggle('on', a.dataset.tab === (r.name === 'program' ? 'programs' : r.name)));
+  document.querySelectorAll('.tabs a').forEach(a => a.classList.toggle('on', a.dataset.tab === (r.name === 'program' ? 'programs' : r.name === 'diag' ? 'history' : r.name)));
+  if (r.name !== 'diag') stopDiagStream();
   const page = $('#page');
   updateSavebar();
   if (S.error === 'no-token' || r.name === 'settings') { page.innerHTML = viewSettings(); bindSettings(); return; }
@@ -374,6 +376,7 @@ async function render() {
   if (S.error) { page.innerHTML = `<h1 class="title">読み込めませんでした</h1>${callout('err', esc(S.error))}<div class="btns"><button class="btn" id="btn-retry">もう一度</button><a class="btn" href="#settings">設定</a></div>`; $('#btn-retry').onclick = () => loadCore().then(render); return; }
   try {
     if (r.name === 'history') { page.innerHTML = '<p class="skeleton">読み込んでいます…</p>'; await renderHistory(page); }
+    else if (r.name === 'diag') { page.innerHTML = viewDiag(); bindDiag(); }
     else if (r.name === 'programs') { page.innerHTML = viewPrograms(); bindPrograms(); }
     else if (r.name === 'program') { page.innerHTML = viewProgram(r.arg); bindProgram(r.arg); }
     else { page.innerHTML = '<p class="skeleton">読み込んでいます…</p>'; await renderToday(page, r.arg || todayKey()); }
@@ -632,9 +635,10 @@ async function renderHistory(page) {
   if (peaks.length) {
     html += callout('info', `この期間の「最大1時間の日射」は、いちばん多い日で <b class="num">${fmtN(Math.max(...peaks))}</b> V・秒、平均で <b class="num">${fmtN(peaks.reduce((a, b) => a + b, 0) / peaks.length)}</b> V・秒でした。日射比例のしきい値を決める目安になります。`);
   }
-  if (metric === 'bat') html += n === 1
+  if (metric === 'bat') html += (n === 1
     ? `<h2>電池の電圧（15分ごと・直近24時間）</h2>${batteryChart(nowTs() - 86400, nowTs() + 900, true)}`
-    : `<h2>電池の電圧（15分ごと）</h2>${batteryChart(dayStart(start), dayStart(end) + 86400)}`;
+    : `<h2>電池の電圧（15分ごと）</h2>${batteryChart(dayStart(start), dayStart(end) + 86400)}`)
+    + '<div class="btns"><a class="btn" href="#diag">測定モード（0.5秒ごと・10分）</a></div>';
   else html += `<h2>${esc(M.label)}</h2>${historyChart(days, M)}`;
   html += `<h2>日ごと</h2><div class="table-wrap"><table class="db"><thead><tr>
       <th>日付</th><th class="r">最大1時間</th><th class="r">日射合計</th><th class="r">給水</th><th class="r">量</th><th class="r">電池<br><span class="muted small">最低</span></th><th>タンク</th></tr></thead><tbody>`;
@@ -727,6 +731,120 @@ function historyChart(days, M) {
     if (i % step === 0) s += `<text x="${cx + bw / 2}" y="${H - 6}" text-anchor="middle">${Number(d.key.slice(5, 7))}/${Number(d.key.slice(8))}</text>`;
   });
   return s + '</svg>';
+}
+
+// ---- 測定モード ----------------------------------------------------------------
+// アプリで開始すると programs.json の diag に時刻を書く → 装置が設定を読みに来たとき（昼は2分ごと）に
+// 10分間眠らずに0.5秒ごとの電池・日射を測り、約10秒分ずつデータ用トピックへ送る（v:2, k:"diag"）。
+// ここでは ntfy の SSE で受けてグラフにする。
+const DIAG_MIN = 10;
+function diagState() {
+  if (!S.diag) S.diag = { start: Number(S.programs?.diag || 0), samples: new Map(), es: null, timer: null };
+  return S.diag;
+}
+function viewDiag() {
+  return `<div class="crumbs"><button onclick="location.hash='#history'">‹ 履歴</button></div>
+    <h1 class="title">測定モード</h1>
+    <p class="subtitle">装置が10分間眠らずに、電池と日射を0.5秒ごとに測って送ります。基板の線を指で軽く触りながらグラフを見て、触った所で電池の値が跳ねれば、そこが接触不良の場所です。表示は約10秒遅れます。</p>
+    <div class="btns"><button class="btn primary" id="btn-diag">測定を始める</button></div>
+    <div id="diag-body"></div>`;
+}
+function bindDiag() {
+  const d = diagState();
+  $('#btn-diag').onclick = startDiag;
+  if (d.start && nowTs() - d.start < (DIAG_MIN + 15) * 60) openDiagStream();
+  drawDiag();
+}
+async function startDiag() {
+  const btn = $('#btn-diag'); if (btn) btn.disabled = true;
+  try {
+    const d = clone(S.programs);
+    d.diag = nowTs();
+    const text = JSON.stringify(d, null, 1) + '\n';
+    const res = await gh('config/programs.json', {
+      method: 'PUT',
+      body: { message: `測定モードを開始（アプリ、${d.diag}）`, content: b64encodeUtf8(text), sha: S.programsSha, branch: 'main' },
+    });
+    S.programs = d; S.programsSha = res.content.sha;
+    if (S.draft) S.draft.diag = d.diag;
+    stopDiagStream();
+    S.diag = { start: d.diag, samples: new Map(), es: null, timer: null };
+    openDiagStream();
+    toast('合図を送りました。装置が受け取るまで1〜3分かかります', 3500);
+  } catch (e) {
+    toast(errText(e), 5000);
+  } finally {
+    if (btn) btn.disabled = false;
+    drawDiag();
+  }
+}
+function openDiagStream() {
+  const d = diagState();
+  if (d.es || !S.topics?.data) return;
+  const es = new EventSource(`https://ntfy.sh/${encodeURIComponent(S.topics.data)}/sse?since=${d.start - 30}`);
+  es.onmessage = e => {
+    let ev, m;
+    try { ev = JSON.parse(e.data); m = JSON.parse(ev.message || '{}'); } catch (err) { return; }
+    if (m.v !== 2 || m.k !== 'diag' || !(m.t >= d.start - 60)) return;
+    (m.o || []).forEach((o, i) => d.samples.set(`${m.t}-${o}`, { ts: m.t + o / 10, b: m.b[i] / 100, s: m.s[i] / 100 }));
+    if (route().name === 'diag') drawDiag();
+  };
+  d.es = es;
+  clearInterval(d.timer);
+  d.timer = setInterval(() => { if (route().name === 'diag') drawDiag(); }, 5000);   // 待ち時間・残り時間の表示を進める
+}
+function stopDiagStream() {
+  const d = S.diag;
+  if (!d) return;
+  if (d.es) { d.es.close(); d.es = null; }
+  clearInterval(d.timer); d.timer = null;
+}
+function drawDiag() {
+  const box = $('#diag-body'); if (!box) return;
+  const d = diagState();
+  const pts = [...d.samples.values()].sort((a, b) => a.ts - b.ts);
+  let html = '';
+  if (!d.start || (!pts.length && nowTs() - d.start > (DIAG_MIN + 15) * 60)) {
+    html += callout('info', '「測定を始める」を押すと、装置に合図を送ります。');
+  } else if (!pts.length) {
+    const w = nowTs() - d.start;
+    html += callout('info', `装置が合図を受け取るのを待っています（${Math.floor(w / 60)}分${w % 60}秒）。昼は1〜3分、夜23時〜5時は最大15分ほどかかります。始まるとスマホに通知が届きます。`);
+  } else {
+    const first = pts[0].ts, last = pts[pts.length - 1].ts;
+    const left = Math.max(0, Math.round((first + DIAG_MIN * 60 - nowTs()) / 60));
+    const done = nowTs() > first + DIAG_MIN * 60 + 30;
+    html += callout(done ? 'ok' : 'info', done ? '測定は終わりました。もう一度測るときは「測定を始める」を押してください。' : `測定中です（残り約${left}分）。`);
+    const recent = pts.filter(p => p.ts >= last - 10).map(p => p.b);
+    const bs = pts.map(p => p.b).filter(v => v >= 10);
+    html += '<div class="props">'
+      + prop('いまの電池', `<span class="num">${fmtN(pts[pts.length - 1].b, 2)} V</span>`)
+      + prop('直近10秒の幅', `<span class="num">${fmtN(Math.min(...recent), 2)} 〜 ${fmtN(Math.max(...recent), 2)} V</span>`)
+      + (bs.length ? prop('測定中の最低・最高', `<span class="num">${fmtN(Math.min(...bs), 2)} 〜 ${fmtN(Math.max(...bs), 2)} V</span>`) : '')
+      + prop('点の数', `<span class="num">${pts.length}</span>（0.5秒ごと）`)
+      + '</div>';
+    html += `<h2>電池の電圧（0.5秒ごと）</h2>${diagChart(pts, first, Math.max(last, first + DIAG_MIN * 60))}`;
+  }
+  box.innerHTML = html;
+}
+function diagChart(pts, a0, a1) {
+  const W = 400, H = 220, L = 40, R = 6, T = 12, B = 22;
+  const iw = W - L - R, ih = H - T - B;
+  const vs = pts.map(p => p.b);
+  let lo = Math.min(...vs), hi = Math.max(...vs);
+  if (hi - lo < 0.04) { const m = (hi + lo) / 2; lo = m - 0.02; hi = m + 0.02; }
+  const steps = [0.01, 0.02, 0.05, 0.1, 0.2, 0.5, 1, 2, 5];
+  const gs = steps.find(g => (hi - lo) / g <= 6) || 5;
+  lo = Math.floor(lo / gs) * gs; hi = Math.ceil(hi / gs) * gs;
+  if (hi <= lo) hi = lo + gs;
+  const x = ts => L + ((ts - a0) / (a1 - a0)) * iw;
+  const y = v => T + ih - ((v - lo) / (hi - lo)) * ih;
+  let s = `<svg class="chart" viewBox="0 0 ${W} ${H}" role="img" aria-label="測定モードの電池の電圧">`;
+  for (let i = 0; lo + i * gs <= hi + gs / 2; i++) { const v = lo + i * gs; s += `<line class="grid" x1="${L}" x2="${W - R}" y1="${y(v)}" y2="${y(v)}"/><text x="${L - 3}" y="${y(v) + 3}" text-anchor="end">${v.toFixed(2)}</text>`; }
+  for (let m = 0; m <= (a1 - a0) / 60; m += 2) s += `<text x="${x(a0 + m * 60)}" y="${H - 6}" text-anchor="middle">${m}分</text>`;
+  let path = '';
+  pts.forEach((p, i) => { const gap = i === 0 || p.ts - pts[i - 1].ts > 3; path += `${gap ? 'M' : 'L'}${x(p.ts).toFixed(1)},${y(p.b).toFixed(1)}`; });
+  s += `<path d="${path}" fill="none" stroke="var(--bar-strong)" stroke-width="1.4" stroke-linejoin="round"/>`;
+  return s + '</svg><p class="hint">線が途切れている所は、装置がデータを送っていた間か、給水していた間です。</p>';
 }
 
 // ---- プログラム一覧 --------------------------------------------------------
