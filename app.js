@@ -4,7 +4,7 @@
 //        ＋ ntfyのデータ用トピックの最新1通（最大15分遅れの値）
 // 設計：vault 30_Blueberry/ベランダ潅水装置/ベランダ_日射比例潅水_データ記録と遠隔設定_設計.md
 
-const APP_VER = '1.7.7';
+const APP_VER = '1.7.8';
 const LS_KEY = 'kansui-app';
 const DEFAULT_REPO = 'factabo-bot/veranda-kansui';
 const JST = 9 * 3600;
@@ -610,7 +610,8 @@ function peakWindow(bins) {
 async function renderHistory(page) {
   const n = S.view.range;
   const end = todayKey(), start = addDays(end, -(n - 1));
-  await ensureMonths(monthsBetween(start, end));
+  // 「1日」は直近24時間を見るので、前日の分も読み込む
+  await ensureMonths(monthsBetween(n === 1 ? addDays(end, -1) : start, end));
   const days = [];
   for (let i = n - 1; i >= 0; i--) days.push(daySummary(addDays(end, -i)));
   const metric = S.view.metric;
@@ -622,15 +623,18 @@ async function renderHistory(page) {
   }[metric];
   const withData = days.filter(d => d.bins.length);
   const peaks = withData.map(d => d.peak);
-  let html = `<h1 class="title">履歴</h1><p class="subtitle">${esc(dayLabel(start))} 〜 ${esc(dayLabel(end))}</p>
+  const sub = n === 1 ? '直近24時間' : `${esc(dayLabel(start))} 〜 ${esc(dayLabel(end))}`;
+  let html = `<h1 class="title">履歴</h1><p class="subtitle">${sub}</p>
     <div class="btns">
-      <div class="seg" id="seg-range">${[7, 14, 30, 90].map(v => `<button data-v="${v}" class="${v === n ? 'on' : ''}">${v}日</button>`).join('')}</div>
+      <div class="seg" id="seg-range">${[1, 7, 14, 30, 90].map(v => `<button data-v="${v}" class="${v === n ? 'on' : ''}">${v}日</button>`).join('')}</div>
       <div class="seg" id="seg-metric">${[['peak', '最大1時間'], ['sol', '日射合計'], ['shots', '給水'], ['bat', '電池']].map(([v, l]) => `<button data-v="${v}" class="${v === metric ? 'on' : ''}">${l}</button>`).join('')}</div>
     </div>`;
   if (peaks.length) {
     html += callout('info', `この期間の「最大1時間の日射」は、いちばん多い日で <b class="num">${fmtN(Math.max(...peaks))}</b> V・秒、平均で <b class="num">${fmtN(peaks.reduce((a, b) => a + b, 0) / peaks.length)}</b> V・秒でした。日射比例のしきい値を決める目安になります。`);
   }
-  if (metric === 'bat') html += `<h2>電池の電圧（15分ごと）</h2>${batteryChart(dayStart(start), dayStart(end) + 86400)}`;
+  if (metric === 'bat') html += n === 1
+    ? `<h2>電池の電圧（15分ごと・直近24時間）</h2>${batteryChart(nowTs() - 86400, nowTs() + 900, true)}`
+    : `<h2>電池の電圧（15分ごと）</h2>${batteryChart(dayStart(start), dayStart(end) + 86400)}`;
   else html += `<h2>${esc(M.label)}</h2>${historyChart(days, M)}`;
   html += `<h2>日ごと</h2><div class="table-wrap"><table class="db"><thead><tr>
       <th>日付</th><th class="r">最大1時間</th><th class="r">日射合計</th><th class="r">給水</th><th class="r">量</th><th class="r">電池<br><span class="muted small">最低</span></th><th>タンク</th></tr></thead><tbody>`;
@@ -648,23 +652,34 @@ async function renderHistory(page) {
   page.querySelectorAll('tr[data-day]').forEach(tr => tr.onclick = () => { location.hash = `#today/${tr.dataset.day}`; });
 }
 // 電池の電圧の折れ線。1時間以上記録が途切れた所は線をつながない。急に上がった所（充電）に印を付ける
-function batteryChart(fromTs, toTs) {
+// fine=true（直近24時間）：縦軸を0.05V刻み、横軸を3時間ごと、15分ごとの点も打つ
+function batteryChart(fromTs, toTs, fine = false) {
   const pts = binsBetween(fromTs, toTs).filter(r => batOk(r.bat_v)).map(r => ({ ts: r.ts, v: r.bat_v }));
   if (pts.length < 2) return '<p class="muted">電池の記録がまだ足りません。</p>';
   const W = 400, H = 220, L = 34, R = 6, T = 12, B = 22;
   const iw = W - L - R, ih = H - T - B;
   const a0 = Math.max(fromTs, pts[0].ts - 3600), a1 = Math.min(toTs, Math.max(nowTs(), pts[pts.length - 1].ts + 900));
   const vs = pts.map(p => p.v);
-  const lo = Math.floor((Math.min(...vs) - 0.05) * 10) / 10, hi = Math.ceil((Math.max(...vs) + 0.05) * 10) / 10;
+  const gs = fine ? 0.05 : 0.1;   // 横線の間隔 [V]
+  const lo = Math.floor((Math.min(...vs) - gs / 2) / gs) * gs, hi = Math.ceil((Math.max(...vs) + gs / 2) / gs) * gs;
   const x = ts => L + ((ts - a0) / (a1 - a0)) * iw;
   const y = v => T + ih - ((v - lo) / (hi - lo)) * ih;
   let s = `<svg class="chart" viewBox="0 0 ${W} ${H}" role="img" aria-label="電池の電圧の推移">`;
-  const steps = Math.round((hi - lo) / 0.1);
+  const steps = Math.round((hi - lo) / gs);
   const every = steps > 8 ? Math.ceil(steps / 6) : 1;
-  for (let i = 0; i <= steps; i += every) { const v = lo + i * 0.1; s += `<line class="grid" x1="${L}" x2="${W - R}" y1="${y(v)}" y2="${y(v)}"/><text x="${L - 3}" y="${y(v) + 3}" text-anchor="end">${v.toFixed(1)}</text>`; }
+  for (let i = 0; i <= steps; i += every) { const v = lo + i * gs; s += `<line class="grid" x1="${L}" x2="${W - R}" y1="${y(v)}" y2="${y(v)}"/><text x="${L - 3}" y="${y(v) + 3}" text-anchor="end">${v.toFixed(fine ? 2 : 1)}</text>`; }
   const days = (a1 - a0) / 86400;
   const stepD = days > 31 ? 14 : days > 14 ? 5 : days > 7 ? 2 : 1;
-  for (let d = dayStart(dayKeyOf(a0)) + 86400, i = 0; d < a1; d += 86400, i++) {
+  if (fine) {   // 3時間ごとの目盛り（0時は日付）
+    for (let t = dayStart(dayKeyOf(a0)); t < a1; t += 3 * 3600) {
+      if (t <= a0) continue;
+      const h = Math.round((t - dayStart(dayKeyOf(t + 60))) / 3600);
+      const k = dayKeyOf(t + 60);
+      const label = h === 0 ? `${Number(k.slice(5, 7))}/${Number(k.slice(8))}` : `${h}時`;
+      s += `<line class="grid" x1="${x(t)}" x2="${x(t)}" y1="${T}" y2="${T + ih}" opacity=".5"/><text x="${x(t)}" y="${H - 6}" text-anchor="middle">${label}</text>`;
+    }
+  }
+  for (let d = dayStart(dayKeyOf(a0)) + 86400, i = 0; !fine && d < a1; d += 86400, i++) {
     if (i % stepD) continue;
     const k = dayKeyOf(d + 3600);
     s += `<line class="grid" x1="${x(d)}" x2="${x(d)}" y1="${T}" y2="${T + ih}" opacity=".5"/><text x="${x(d)}" y="${H - 6}" text-anchor="middle">${Number(k.slice(5, 7))}/${Number(k.slice(8))}</text>`;
@@ -677,6 +692,7 @@ function batteryChart(fromTs, toTs) {
     if (prev && p.v - prev.v >= 0.25) charges.push(p.ts);
   });
   s += `<path d="${path}" fill="none" stroke="var(--bar-strong)" stroke-width="1.8" stroke-linejoin="round"/>`;
+  if (fine) for (const p of pts) s += `<circle cx="${x(p.ts).toFixed(1)}" cy="${y(p.v).toFixed(1)}" r="2" fill="var(--bar-strong)"><title>${hmOf(p.ts)} ${fmtN(p.v, 2)} V</title></circle>`;
   for (const c of charges) s += `<line class="nowline" x1="${x(c)}" x2="${x(c)}" y1="${T}" y2="${T + ih}" style="stroke:var(--green)"/><text x="${x(c) + 3}" y="${T + 10}" text-anchor="start" style="fill:var(--green)">充電</text>`;
   s += '</svg>';
   // 直近3日（前回の充電より後）の下がり方
