@@ -480,8 +480,6 @@ async function renderToday(page, key) {
 // 手動給水：programs.json の manual に時刻を書く → 装置が設定を読みに来たとき（昼は2分ごと）に1回給水する
 const MANUAL_WAIT_MIN = 10;
 async function startManual() {
-  const ms = S.programs?.common?.manual_sec;
-  if (!confirm(`手動で${ms || ''}秒の給水を装置に頼みます。よろしいですか？`)) return;
   const btn = $('#btn-manual'); if (btn) btn.disabled = true;
   try {
     const d = clone(S.programs);
