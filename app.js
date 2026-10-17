@@ -431,8 +431,8 @@ async function renderToday(page, key) {
     html += '</div>';
     const mn = Number(S.programs?.manual || 0), mnWait = mn && nowTs() - mn < MANUAL_WAIT_MIN * 60;
     const ms = S.programs?.common?.manual_sec;
-    html += `<div class="btns"><button class="btn primary" id="btn-manual">${ms ? `手動で${ms}秒給水する` : '手動で給水する'}</button></div>`
-      + `<p class="hint">${mnWait ? `${esc(hmOf(mn))}に合図を送りました。装置が受け取るまで1〜3分かかります（23時〜5時は15分ほど）。` : '装置が合図を受け取ると、手動ボタンを1回押したのと同じ給水をします。電池が低いときは給水しません。'}</p>`;
+    html += `<div class="btns"><button class="btn primary" id="btn-manual">${ms ? `手動スイッチをオン（${ms}秒）` : '手動スイッチをオン'}</button></div>`
+      + `<p class="hint">${mnWait ? `${esc(hmOf(mn))}に合図を送りました。装置が受け取るまで1〜3分かかります（23時〜5時は15分ほど）。` : '装置が合図を受け取ると、手動スイッチを入れたときと同じ給水をします。電池が低いときは給水しません。'}</p>`;
   } else {
     html += `<div class="props">${prop('プログラム', esc(progName(pf?.id)) + ' <span class="muted small">今の割り当てから表示</span>')}</div>`;
   }
