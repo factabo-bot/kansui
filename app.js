@@ -4,7 +4,7 @@
 //        ＋ ntfyのデータ用トピックの最新1通（最大15分遅れの値）
 // 設計：vault 30_Blueberry/ベランダ潅水装置/ベランダ_日射比例潅水_データ記録と遠隔設定_設計.md
 
-const APP_VER = '1.8.0';
+const APP_VER = '1.9.0';
 const LS_KEY = 'kansui-app';
 const DEFAULT_REPO = 'factabo-bot/veranda-kansui';
 const JST = 9 * 3600;
@@ -429,6 +429,10 @@ async function renderToday(page, key) {
     }
     if (lastTs) html += prop('最終受信', `${esc(hmOf(lastTs))} <span class="muted small">${esc(ago(lastTs))}</span>`);
     html += '</div>';
+    const mn = Number(S.programs?.manual || 0), mnWait = mn && nowTs() - mn < MANUAL_WAIT_MIN * 60;
+    const ms = S.programs?.common?.manual_sec;
+    html += `<div class="btns"><button class="btn primary" id="btn-manual">${ms ? `手動で${ms}秒給水する` : '手動で給水する'}</button></div>`
+      + `<p class="hint">${mnWait ? `${esc(hmOf(mn))}に合図を送りました。装置が受け取るまで1〜3分かかります（23時〜5時は15分ほど）。` : '装置が合図を受け取ると、手動ボタンを1回押したのと同じ給水をします。電池が低いときは給水しません。'}</p>`;
   } else {
     html += `<div class="props">${prop('プログラム', esc(progName(pf?.id)) + ' <span class="muted small">今の割り当てから表示</span>')}</div>`;
   }
@@ -470,7 +474,31 @@ async function renderToday(page, key) {
   $('#d-next').onclick = () => { if (!isToday) go(addDays(key, 1)); };
   $('#d-pick').onchange = e => { if (e.target.value) go(e.target.value); };
   const tb = $('#d-today'); if (tb) tb.onclick = () => go(todayKey());
+  const mb = $('#btn-manual'); if (mb) mb.onclick = startManual;
   watchApply(isToday && cfgApplied != null && cfgLatest != null && cfgApplied < cfgLatest);
+}
+// 手動給水：programs.json の manual に時刻を書く → 装置が設定を読みに来たとき（昼は2分ごと）に1回給水する
+const MANUAL_WAIT_MIN = 10;
+async function startManual() {
+  const ms = S.programs?.common?.manual_sec;
+  if (!confirm(`手動で${ms || ''}秒の給水を装置に頼みます。よろしいですか？`)) return;
+  const btn = $('#btn-manual'); if (btn) btn.disabled = true;
+  try {
+    const d = clone(S.programs);
+    d.manual = nowTs();
+    const text = JSON.stringify(d, null, 1) + '\n';
+    const res = await gh('config/programs.json', {
+      method: 'PUT',
+      body: { message: `手動給水の合図（アプリ、${d.manual}）`, content: b64encodeUtf8(text), sha: S.programsSha, branch: 'main' },
+    });
+    S.programs = d; S.programsSha = res.content.sha;
+    if (S.draft) S.draft.manual = d.manual;
+    toast('合図を送りました。装置が受け取るまで1〜3分かかります', 3500);
+  } catch (e) {
+    toast(errText(e), 5000);
+  } finally {
+    rerenderSoft();
+  }
 }
 // 「反映待ち」の間は、30秒ごとに装置からの記録を読み直し、届いたら画面を更新する
 let applyTimer = null;
